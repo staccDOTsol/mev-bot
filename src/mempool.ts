@@ -19,7 +19,7 @@ type MempoolUpdate = {
 };
 
 const getProgramUpdates = (searcherClient: SearcherClient) =>
-  searcherClient.programUpdates(PROGRAMS_OF_INTEREST, (error) => {
+  searcherClient.programUpdates(PROGRAMS_OF_INTEREST, ["amsterdam"], (error) => {
     logger.error(error);
     throw error;
   });

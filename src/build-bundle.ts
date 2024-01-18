@@ -1,7 +1,6 @@
 import {
   AccountMeta,
   Keypair,
-  PublicKey,
   SystemProgram,
   TransactionInstruction,
   TransactionMessage,
@@ -12,8 +11,10 @@ import * as fs from 'fs';
 import { config } from './config.js';
 import * as Token from '@solana/spl-token-3';
 import { connection } from './clients/rpc.js';
-import { BN } from 'bn.js';
-import { IDL, JUPITER_PROGRAM_ID, SwapMode } from '@jup-ag/common';
+import BN from 'bn.js';
+import { IDL, JUPITER_PROGRAM_ID, SwapMode, WRAPPED_SOL_MINT } from '@jup-ag/common';
+import { MarginfiAccountWrapper } from "mrgn-ts";
+
 
 import jsbi from 'jsbi';
 import { defaultImport } from 'default-import';
@@ -27,23 +28,49 @@ import {
 } from './markets/index.js';
 import { lookupTableProvider } from './lookup-table-provider.js';
 import {
-  SOLEND_PRODUCTION_PROGRAM_ID,
-  flashBorrowReserveLiquidityInstruction,
-  flashRepayReserveLiquidityInstruction,
-} from '@solendprotocol/solend-sdk';
-import {
   BASE_MINTS_OF_INTEREST,
   SOLEND_FLASHLOAN_FEE_BPS,
-  SOLEND_TURBO_POOL,
-  SOLEND_TURBO_SOL_FEE_RECEIVER,
-  SOLEND_TURBO_SOL_LIQUIDITY,
-  SOLEND_TURBO_SOL_RESERVE,
-  SOLEND_TURBO_USDC_FEE_RECEIVER,
-  SOLEND_TURBO_USDC_LIQUIDITY,
-  SOLEND_TURBO_USDC_RESERVE,
+  USDC_MINT_STRING,
 } from './constants.js';
 import { SwapLegAndAccounts } from '@jup-ag/core/dist/lib/amm.js';
+
+import { MarginfiClient, getConfig } from "mrgn-ts";
+import { PublicKey } from "@solana/web3.js";
+import {BigNumber} from 'bignumber.js';
+
+
 const JSBI = defaultImport(jsbi);
+
+export async function getMarginfiClient({
+  readonly,
+  authority,
+  provider,
+  wallet 
+}: {
+  readonly?: boolean;
+  authority?: PublicKey;
+  provider? : anchor.AnchorProvider;
+  wallet? : anchor.Wallet;
+} = {}): Promise<MarginfiClient> {
+  const connection = provider.connection;
+
+  const config = getConfig("production");
+
+  if (authority && !readonly) {
+    console.log("Cannot only specify authority when readonly");
+  }
+
+  const client = await MarginfiClient.fetch(
+    config,
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+authority ? ({ publicKey: authority } as any) : wallet,
+    connection,
+    undefined,
+    readonly
+  );
+
+  return client;
+}
 
 const PROFIT_BUFFER_PERCENT = 3;
 
@@ -307,25 +334,20 @@ async function* buildBundle(
 
     const instructionsMain: TransactionInstruction[] = [];
 
-    const solendReserve = isUSDC
-      ? SOLEND_TURBO_USDC_RESERVE
-      : SOLEND_TURBO_SOL_RESERVE;
+    const client = await getMarginfiClient({readonly: false, authority: new PublicKey("7ihN8QaTfNoDTRTQGULCzbUT3PHwPDTu5Brcu4iT2paP"), provider, wallet});
 
-    const solendLiquidity = isUSDC
-      ? SOLEND_TURBO_USDC_LIQUIDITY
-      : SOLEND_TURBO_SOL_LIQUIDITY;
-
-    const flashBorrowIxn = flashBorrowReserveLiquidityInstruction(
-      new BN(arbSize.toString()),
-      solendLiquidity,
-      sourceTokenAccount,
-      solendReserve,
-      SOLEND_TURBO_POOL,
-      SOLEND_PRODUCTION_PROGRAM_ID,
-    );
-
-    instructionsMain.push(flashBorrowIxn);
-
+    console.log(`Using ${client.config.environment} environment; wallet: ${client.wallet.publicKey.toBase58()}`);
+  
+    const marginfiAccount = await MarginfiAccountWrapper.fetch("EW1iozTBrCgyd282g2eemSZ8v5xs7g529WFv4g69uuj2", client);
+    const mint = isUSDC
+    ? new PublicKey(USDC_MINT_STRING)
+    : WRAPPED_SOL_MINT;
+    const solBank = client.getBankByMint(mint);
+    if (!solBank) throw Error("SOL bank not found");
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
+    const borrowIx = await marginfiAccount.makeBorrowIx(BigNumber(arbSize.toString()), solBank.address);
+    instructionsMain.push(...borrowIx.instructions);
     const jupiterIxn = jupiterProgram.instruction.route(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       legs as any,
@@ -346,24 +368,16 @@ async function* buildBundle(
 
     instructionsMain.push(jupiterIxn);
 
-    const solendFeeReceiver = isUSDC
-      ? SOLEND_TURBO_USDC_FEE_RECEIVER
-      : SOLEND_TURBO_SOL_FEE_RECEIVER;
+    const endIndex = instructionsMain.length + 1;
 
-    const flashRepayIxn = flashRepayReserveLiquidityInstruction(
-      new BN(arbSize.toString()), // liquidityAmount
-      0, // borrowInstructionIndex
-      sourceTokenAccount, // sourceLiquidity
-      solendLiquidity, // destinationLiquidity
-      solendFeeReceiver, // reserveLiquidityFeeReceiver
-      sourceTokenAccount, // hostFeeReceiver
-      solendReserve, // reserve
-      SOLEND_TURBO_POOL, // lendingMarket
-      payer.publicKey, // userTransferAuthority
-      SOLEND_PRODUCTION_PROGRAM_ID, // lendingProgramId
-    );
-
-    instructionsMain.push(flashRepayIxn);
+    const beginFlashLoanIx = await marginfiAccount.makeBeginFlashLoanIx(endIndex);
+    const endFlashLoanIx = await marginfiAccount.makeEndFlashLoanIx();
+    // eslint-disable-next-line prefer-const
+    let ixs = [
+      ...beginFlashLoanIx.instructions,
+      ...instructionsMain,
+      ...endFlashLoanIx.instructions,
+    ]
 
     if (!isUSDC) {
       const closeSolTokenAcc = Token.createCloseAccountInstruction(
@@ -371,7 +385,7 @@ async function* buildBundle(
         payer.publicKey,
         payer.publicKey,
       );
-      instructionsMain.push(closeSolTokenAcc);
+      ixs.push(closeSolTokenAcc);
     }
 
     const tipIxn = SystemProgram.transfer({
@@ -379,7 +393,7 @@ async function* buildBundle(
       toPubkey: getRandomTipAccount(),
       lamports: BigInt(tipLamports.toString()),
     });
-    instructionsMain.push(tipIxn);
+    ixs.push(tipIxn);
 
     const messageSetUp = new TransactionMessage({
       payerKey: payer.publicKey,
@@ -390,7 +404,7 @@ async function* buildBundle(
     txSetUp.sign(setUpSigners);
 
     const addressesMain: PublicKey[] = [];
-    instructionsMain.forEach((ixn) => {
+    ixs.forEach((ixn) => {
       ixn.keys.forEach((key) => {
         addressesMain.push(key.pubkey);
       });
@@ -400,7 +414,7 @@ async function* buildBundle(
     const messageMain = new TransactionMessage({
       payerKey: payer.publicKey,
       recentBlockhash: txn.message.recentBlockhash,
-      instructions: instructionsMain,
+      instructions: ixs,
     }).compileToV0Message(lookupTablesMain);
     const txMain = new VersionedTransaction(messageMain);
     try {
@@ -414,7 +428,14 @@ async function* buildBundle(
       logger.error(e, 'error signing txMain');
       continue;
     }
-
+    let accountsAmongTxs = 0;
+    for (const tx of [txn, txSetUp, txMain]){
+      accountsAmongTxs += tx.message.getAccountKeys().length;
+    }
+    if (accountsAmongTxs > 64){
+      logger.error('too many accounts');
+      continue;
+    }
     const bundle = [txn, txSetUp, txMain];
 
     yield {

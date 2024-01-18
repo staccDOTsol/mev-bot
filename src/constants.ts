@@ -39,4 +39,4 @@ export const SOLEND_TURBO_USDC_FEE_RECEIVER = new PublicKey(
   '5Gdxn4yquneifE6uk9tK8X4CqHfWKjW2BvYU25hAykwP',
 );
 
-export const SOLEND_FLASHLOAN_FEE_BPS = 30;
+export const SOLEND_FLASHLOAN_FEE_BPS = 0;

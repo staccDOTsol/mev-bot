@@ -6,6 +6,7 @@ WORKDIR /usr/src/app
 COPY --chown=node:node . .
 RUN yarn install --frozen-lockfile
 ENV NODE_ENV production
+COPY ./mrgn-ts /usr/src/app/node_modules/mrgn-ts
 RUN yarn build
 USER node
 

@@ -3,16 +3,16 @@ import EventEmitter from 'events';
 import fetch, { RequestInfo, RequestInit, Response } from 'node-fetch';
 import { config } from '../config.js';
 import { logger } from '../logger.js';
-import Agent from 'agentkeepalive';
+import {Agent as HttpsAgent} from 'https';
+
 import { Queue } from '@datastructures-js/queue';
 
 const RPC_URL = config.get('rpc_url');
 const RPC_REQUESTS_PER_SECOND = config.get('rpc_requests_per_second');
 const RPC_MAX_BATCH_SIZE = config.get('rpc_max_batch_size');
 
-const keepaliveAgent = new Agent({
+const keepaliveAgent = new HttpsAgent({
   timeout: 4000,
-  freeSocketTimeout: 4000,
   maxSockets: 2048,
 });
 
@@ -148,7 +148,6 @@ const coalesceFetch = () => {
     url: RequestInfo,
     optionsWithoutDefaults: RequestInit,
   ): Promise<Response> => {
-    logger.trace(keepaliveAgent.getCurrentStatus(), `agent status:`);
     if (rpcRateLimiter.tryConsume()) {
       return fetch(url, optionsWithoutDefaults);
     } else {
@@ -164,9 +163,12 @@ let connection: Connection;
 if (RPC_REQUESTS_PER_SECOND > 0) {
   connection = new Connection(RPC_URL, {
     commitment: 'processed',
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+    // @ts-ignore
     fetch: coalesceFetch(),
     disableRetryOnRateLimit: true,
     httpAgent: keepaliveAgent,
+    
   });
 } else {
   connection = new Connection(RPC_URL, {

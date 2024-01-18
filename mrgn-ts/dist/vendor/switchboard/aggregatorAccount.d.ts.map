@@ -1,0 +1,1 @@
+{"version":3,"file":"aggregatorAccount.d.ts","sourceRoot":"","sources":["../../../src/vendor/switchboard/aggregatorAccount.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,MAAM,WAAW,CAAC;AAEpC,qBAAa,iBAAkB,SAAQ,OAAO;IAC5C,MAAM,CAAC,iBAAiB,CAAC,UAAU,EAAE;QAAE,oBAAoB,EAAE;YAAE,UAAU,EAAE,GAAG,CAAC;YAAC,MAAM,EAAE;gBAAE,KAAK,EAAE,MAAM,GAAG,CAAA;aAAE,CAAA;SAAE,CAAA;KAAE;CAOjH"}
